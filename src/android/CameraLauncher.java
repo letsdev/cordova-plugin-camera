@@ -784,11 +784,13 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
         String finalLocation = fileLocation != null ? fileLocation : uriString;
         String mimeTypeOfGalleryFile = FileHelper.getMimeType(uriString, this.cordova);
 
-        // Since the picker no longer requests media permissions, it may hand back a
-        // content:// URI (e.g. from Google Photos) that has no resolvable local file
-        // path. The feedback flow expects a local file path, so copy the content into
-        // a temporary file and return that path instead.
-        if (destType == FILE_URI && fileLocation == null && "content".equalsIgnoreCase(uri.getScheme())) {
+        // Since the picker no longer requests media permissions, it hands back a
+        // content:// URI. Even when getRealPath can resolve a real path, that path
+        // often points at shared external storage (e.g. /storage/emulated/0/Pictures/...)
+        // which the app cannot read without media permissions, so the File plugin fails.
+        // Always copy the content into a temporary file in app cache and return that
+        // path instead, so the file is reliably accessible.
+        if (destType == FILE_URI && "content".equalsIgnoreCase(uri.getScheme())) {
             try {
                 finalLocation = copyContentUriToTempFile(uri, mimeTypeOfGalleryFile);
             } catch (IOException e) {
