@@ -196,13 +196,11 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
                     this.callTakePicture(destType, encodingType);
                 }
                 else if ((this.srcType == PHOTOLIBRARY) || (this.srcType == SAVEDPHOTOALBUM)) {
-                    // FIXME: Stop always requesting the permission
-                    String[] permissions = getPermissions(true, mediaType);
-                    if(!hasPermissions(permissions)) {
-                        PermissionHelper.requestPermissions(this, SAVE_TO_ALBUM_SEC, permissions);
-                    } else {
-                        this.getImage(this.srcType, destType);
-                    }
+                    // Library access uses the system picker (ACTION_GET_CONTENT / ACTION_PICK),
+                    // which does not require READ_MEDIA_IMAGES / READ_MEDIA_VIDEO. Requesting
+                    // those permissions here would make Google Play reject the app, so we start
+                    // the picker directly without any permission request.
+                    this.getImage(this.srcType, destType);
                 }
             }
             catch (IllegalArgumentException e)
@@ -738,6 +736,31 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
 
 
     /**
+     * Copies the content behind a content:// URI into a temporary local file and returns
+     * the resulting file:// URI string. Used when the system picker returns a content URI
+     * (e.g. from Google Photos) that has no resolvable local file path.
+     *
+     * @param uri      The content:// URI to copy
+     * @param mimeType The mime type of the picked file, used to pick a sensible extension
+     * @return the file:// URI string pointing to the temporary local copy
+     */
+    private String copyContentUriToTempFile(Uri uri, String mimeType) throws IOException {
+        String extension = getExtensionForEncodingType();
+        if (mimeType != null) {
+            if (mimeType.equalsIgnoreCase(PNG_MIME_TYPE)) {
+                extension = PNG_EXTENSION;
+            } else if (mimeType.equalsIgnoreCase(JPEG_MIME_TYPE) || mimeType.equalsIgnoreCase(HEIC_MIME_TYPE)) {
+                extension = JPEG_EXTENSION;
+            }
+        }
+
+        File tempFile = new File(getTempDirectoryPath(), "picked_" + System.currentTimeMillis() + extension);
+        InputStream inputStream = FileHelper.getInputStreamFromUriString(uri.toString(), cordova);
+        writeUncompressedImage(inputStream, Uri.fromFile(tempFile));
+        return Uri.fromFile(tempFile).toString();
+    }
+
+    /**
      * Applies all needed transformation to the image received from the gallery.
      *
      * @param destType In which form should we return the image
@@ -760,6 +783,20 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
         String uriString = uri.toString();
         String finalLocation = fileLocation != null ? fileLocation : uriString;
         String mimeTypeOfGalleryFile = FileHelper.getMimeType(uriString, this.cordova);
+
+        // Since the picker no longer requests media permissions, it may hand back a
+        // content:// URI (e.g. from Google Photos) that has no resolvable local file
+        // path. The feedback flow expects a local file path, so copy the content into
+        // a temporary file and return that path instead.
+        if (destType == FILE_URI && fileLocation == null && "content".equalsIgnoreCase(uri.getScheme())) {
+            try {
+                finalLocation = copyContentUriToTempFile(uri, mimeTypeOfGalleryFile);
+            } catch (IOException e) {
+                e.printStackTrace();
+                this.failPicture("Error retrieving image: " + e.getLocalizedMessage());
+                return;
+            }
+        }
 
         if (finalLocation == null) {
             this.failPicture("Error retrieving result.");
