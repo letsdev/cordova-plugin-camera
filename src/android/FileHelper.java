@@ -17,12 +17,14 @@
 package org.apache.cordova.camera;
 
 import android.annotation.SuppressLint;
+import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.webkit.MimeTypeMap;
@@ -31,6 +33,7 @@ import org.apache.cordova.CordovaInterface;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Locale;
@@ -157,7 +160,40 @@ public class FileHelper {
         InputStream returnValue = null;
         if (uriString.startsWith("content")) {
             Uri uri = Uri.parse(uriString);
-            returnValue = cordova.getActivity().getContentResolver().openInputStream(uri);
+            ContentResolver resolver = cordova.getActivity().getContentResolver();
+            try {
+                returnValue = resolver.openInputStream(uri);
+            } catch (FileNotFoundException e) {
+                // some providers (EMUI) ENOENT openInputStream but openFileDescriptor works; retry below.
+                // diagnostic probe: SIZE!=null -> file exists, open blocked (perm); SIZE null -> orphaned row.
+                Cursor probe = null;
+                try {
+                    probe = resolver.query(uri,
+                            new String[]{android.provider.OpenableColumns.DISPLAY_NAME,
+                                    android.provider.OpenableColumns.SIZE},
+                            null, null, null);
+                    if (probe != null && probe.moveToFirst()) {
+                        int nameIdx = probe.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                        int sizeIdx = probe.getColumnIndex(android.provider.OpenableColumns.SIZE);
+                        String name = nameIdx >= 0 ? probe.getString(nameIdx) : "<none>";
+                        String size = (sizeIdx >= 0 && !probe.isNull(sizeIdx))
+                                ? String.valueOf(probe.getLong(sizeIdx)) : "<null>";
+                        android.util.Log.d(LOG_TAG, "URI open failed; metadata probe name=" + name + " size=" + size);
+                    } else {
+                        android.util.Log.d(LOG_TAG, "URI open failed; metadata probe returned no row");
+                    }
+                } catch (Exception probeEx) {
+                    android.util.Log.d(LOG_TAG, "URI open failed; metadata probe threw: " + probeEx);
+                } finally {
+                    if (probe != null) probe.close();
+                }
+
+                ParcelFileDescriptor pfd = resolver.openFileDescriptor(uri, "r");
+                if (pfd == null) {
+                    throw e;
+                }
+                returnValue = new ParcelFileDescriptor.AutoCloseInputStream(pfd);
+            }
         } else if (uriString.startsWith("file://")) {
             int question = uriString.indexOf("?");
             if (question > -1) {
